@@ -39,15 +39,16 @@ def make_env(cfg):
                        task_name=task_name,
                        seed=cfg.seed,
                        visualize_reward=False,
-                       from_pixels=True,
+                       from_pixels=True, # 返回像素空间
                        height=cfg.image_size,
                        width=cfg.image_size,
-                       frame_skip=cfg.action_repeat,
+                       frame_skip=cfg.action_repeat, # 调整
                        camera_id=camera_id)
 
-    env = utils.FrameStack(env, k=cfg.frame_stack)
+    env = utils.FrameStack(env, k=cfg.frame_stack) # 帧堆叠
 
     env.seed(cfg.seed)
+    # 动作空间再-1 1 之间
     assert env.action_space.low.min() >= -1
     assert env.action_space.high.max() <= 1
 
@@ -56,11 +57,13 @@ def make_env(cfg):
 
 class Workspace(object):
     def __init__(self, cfg):
+        # 以执行的目录作为主目录
         self.work_dir = os.getcwd()
         print(f'workspace: {self.work_dir}')
 
         self.cfg = cfg
 
+        # 日志类
         self.logger = Logger(self.work_dir,
                              save_tb=cfg.log_save_tb,
                              log_frequency=cfg.log_frequency_step,
@@ -68,15 +71,17 @@ class Workspace(object):
                              action_repeat=cfg.action_repeat)
 
         utils.set_seed_everywhere(cfg.seed)
-        self.device = torch.device(cfg.device)
+        self.device = torch.device(cfg.device) # 后续要适配自动选择合适的gpu设备
         self.env = make_env(cfg)
 
+        # 观察shape，动作shape，动作范围
         cfg.agent.params.obs_shape = self.env.observation_space.shape
         cfg.agent.params.action_shape = self.env.action_space.shape
         cfg.agent.params.action_range = [
             float(self.env.action_space.low.min()),
             float(self.env.action_space.high.max())
         ]
+        # 根据配置文件创建智能体
         self.agent = hydra.utils.instantiate(cfg.agent)
 
         self.replay_buffer = ReplayBuffer(self.env.observation_space.shape,
@@ -84,11 +89,13 @@ class Workspace(object):
                                           cfg.replay_buffer_capacity,
                                           self.cfg.image_pad, self.device)
 
+        # todo 后续记录，应该是记录游戏过程
         self.video_recorder = VideoRecorder(
             self.work_dir if cfg.save_video else None)
         self.step = 0
 
     def evaluate(self):
+        # todo 后续补上
         average_episode_reward = 0
         for episode in range(self.cfg.num_eval_episodes):
             obs = self.env.reset()
@@ -114,9 +121,11 @@ class Workspace(object):
     def run(self):
         episode, episode_reward, episode_step, done = 0, 0, 1, True
         start_time = time.time()
+        # 限制指定的训练步数
         while self.step < self.cfg.num_train_steps:
             if done:
                 if self.step > 0:
+                    # 记录步数以及经过的时间
                     self.logger.log('train/duration',
                                     time.time() - start_time, self.step)
                     start_time = time.time()
@@ -125,6 +134,7 @@ class Workspace(object):
 
                 # evaluate agent periodically
                 if self.step % self.cfg.eval_frequency == 0:
+                    # 验证
                     self.logger.log('eval/episode', episode, self.step)
                     self.evaluate()
 
@@ -137,17 +147,21 @@ class Workspace(object):
                 episode_step = 0
                 episode += 1
 
+                # 记录使用的命数
                 self.logger.log('train/episode', episode, self.step)
 
             # sample action for data collection
             if self.step < self.cfg.num_seed_steps:
+                # 较早的步数
                 action = self.env.action_space.sample()
             else:
                 with utils.eval_mode(self.agent):
+                    # 使用验证模式预测动作
                     action = self.agent.act(obs, sample=True)
 
             # run training update
             if self.step >= self.cfg.num_seed_steps:
+                # 这里应该就是训练了，达到指定的步数后，开始训练
                 for _ in range(self.cfg.num_train_iters):
                     self.agent.update(self.replay_buffer, self.logger,
                                       self.step)
@@ -156,8 +170,9 @@ class Workspace(object):
 
             # allow infinite bootstrap
             done = float(done)
+            # 判断是否到达最大步数而结束
             done_no_max = 0 if episode_step + 1 == self.env._max_episode_steps else done
-            episode_reward += reward
+            episode_reward += reward # 每条命获取的奖励总和 
 
             self.replay_buffer.add(obs, action, reward, next_obs, done,
                                    done_no_max)

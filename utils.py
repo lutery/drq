@@ -156,16 +156,22 @@ class TanhTransform(pyd.transforms.Transform):
 
 class SquashedNormal(pyd.transformed_distribution.TransformedDistribution):
     def __init__(self, loc, scale):
+        '''
+        loc: 均值
+        scale: 标准差
+        '''
         self.loc = loc
         self.scale = scale
 
-        self.base_dist = pyd.Normal(loc, scale)
-        transforms = [TanhTransform()]
+        self.base_dist = pyd.Normal(loc, scale) # 构建一个正太分布
+        transforms = [TanhTransform()] # tanh变化，将输出的值限制在[-1, 1]之间
         super().__init__(self.base_dist, transforms)
 
     @property
     def mean(self):
+        # todo 何时使用
         mu = self.loc
         for tr in self.transforms:
-            mu = tr(mu)
+            mu = tr(mu) # 这里使用的tanh，主要是为了防止动作越界，因为动作空间的范围是-1 1
+            # todo 尝试其他变换，比如输出的动作使用tanh
         return mu

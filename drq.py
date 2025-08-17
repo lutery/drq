@@ -35,7 +35,7 @@ class Encoder(nn.Module):
         self.outputs = dict()
 
     def forward_conv(self, obs):
-        obs = obs / 255.
+        obs = obs / 255. # 归一化，Encoder中
         self.outputs['obs'] = obs
 
         conv = torch.relu(self.convs[0](obs))
@@ -89,20 +89,27 @@ class Actor(nn.Module):
         self.trunk = utils.mlp(self.encoder.feature_dim, hidden_dim,
                                2 * action_shape[0], hidden_depth)
 
-        self.outputs = dict()
+        self.outputs = dict() # 存储预测的均值和方差
         self.apply(utils.weight_init)
 
     def forward(self, obs, detach_encoder=False):
         obs = self.encoder(obs, detach=detach_encoder)
 
+        # 预测并分离均值和对数标准差
         mu, log_std = self.trunk(obs).chunk(2, dim=-1)
 
         # constrain log_std inside [log_std_min, log_std_max]
-        log_std = torch.tanh(log_std)
+        # 为什么要这样缩放？
+        # 稳定性考虑：
+
+        # 防止标准差过大：如果std过大（log_std > 2，即std > e²≈7.4），动作分布过于随机，探索效率低
+        # 防止标准差过小：如果std过小（log_std < -10，即std < e⁻¹⁰≈0.000045），分布退化为确定性，失去探索能力
+        # 梯度稳定：tanh函数在极值处梯度接近0，避免梯度爆炸
+        log_std = torch.tanh(log_std) # 对预测的值缩放到-1， 1之间，方便后续线性映射到log_std_min、log_std_max之间
         log_std_min, log_std_max = self.log_std_bounds
         log_std = log_std_min + 0.5 * (log_std_max - log_std_min) * (log_std +
                                                                      1)
-        std = log_std.exp()
+        std = log_std.exp() # 这里是为确保std一定大于0
 
         self.outputs['mu'] = mu
         self.outputs['std'] = std
@@ -167,6 +174,22 @@ class DRQAgent(object):
                  encoder_cfg, critic_cfg, actor_cfg, discount,
                  init_temperature, lr, actor_update_frequency, critic_tau,
                  critic_target_update_frequency, batch_size):
+        '''
+        obs_shape: 观察空间shape
+        action_shape: 动作空间
+        action_range: 动作范围
+        device: 执行的设备
+        encoder_cfg: 编码器配置
+        critic_cfg: 评论家配置
+        action_cfg: 动作配置
+        discount: 折扣
+        init_temperature: 初始温度 todo
+        lr: 学习率
+        actor_update_frequency: actor更新频率
+        critic_tau: critic软更新参数
+        critic_target_update_frequency: critic目标网络更新频率
+        batch_size: 批量大小
+        '''
         self.action_range = action_range
         self.device = device
         self.discount = discount
@@ -175,19 +198,23 @@ class DRQAgent(object):
         self.critic_target_update_frequency = critic_target_update_frequency
         self.batch_size = batch_size
 
+        # Actor
         self.actor = hydra.utils.instantiate(actor_cfg).to(self.device)
 
+        # Critic
         self.critic = hydra.utils.instantiate(critic_cfg).to(self.device)
         self.critic_target = hydra.utils.instantiate(critic_cfg).to(
             self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
 
         # tie conv layers between actor and critic
+        # 共享编码层再评价和动作预测网络之间
         self.actor.encoder.copy_conv_weights_from(self.critic.encoder)
 
+        # 作用 todo
         self.log_alpha = torch.tensor(np.log(init_temperature)).to(device)
         self.log_alpha.requires_grad = True
-        # set target entropy to -|A|
+        # set target entropy to -|A| 好像又是那个传说中的最佳探索目标熵值
         self.target_entropy = -action_shape[0]
 
         # optimizers
@@ -211,9 +238,9 @@ class DRQAgent(object):
     def act(self, obs, sample=False):
         obs = torch.FloatTensor(obs).to(self.device)
         obs = obs.unsqueeze(0)
-        dist = self.actor(obs)
-        action = dist.sample() if sample else dist.mean
-        action = action.clamp(*self.action_range)
+        dist = self.actor(obs) # 预测动作分布
+        action = dist.sample() if sample else dist.mean # 如果是贪婪策略，则选择均值；否则则进行采样
+        action = action.clamp(*self.action_range) # 都已经在[-1, 1]之间，还要clamp吗？
         assert action.ndim == 2 and action.shape[0] == 1
         return utils.to_np(action[0])
 
@@ -221,7 +248,7 @@ class DRQAgent(object):
                       next_obs_aug, not_done, logger, step):
         with torch.no_grad():
             dist = self.actor(next_obs)
-            next_action = dist.rsample()
+            next_action = dist.rsample() # 预测下一个动作的分布后并采样
             log_prob = dist.log_prob(next_action).sum(-1, keepdim=True)
             target_Q1, target_Q2 = self.critic_target(next_obs, next_action)
             target_V = torch.min(target_Q1,

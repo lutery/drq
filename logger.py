@@ -107,6 +107,9 @@ class MetersGroup(object):
 
 
 class Logger(object):
+    '''
+    TODO 后续加上该类的注释
+    '''
     def __init__(self,
                  log_dir,
                  save_tb=False,
