@@ -246,10 +246,27 @@ class DRQAgent(object):
 
     def update_critic(self, obs, obs_aug, action, reward, next_obs,
                       next_obs_aug, not_done, logger, step):
+        '''
+        obs: 环境观察
+        obs_aug: 数据增强后的环境观察
+        action: 执行的动作
+        reward: 执行动作后的奖励
+        next_obs: 执行动作后的下一个观察
+        next_obs_aug: 数据增强后的下一个观察
+        not_done: 终止标志
+        logger: 日志记录
+        step: 当前训练步数
+        '''
         with torch.no_grad():
             dist = self.actor(next_obs)
             next_action = dist.rsample() # 预测下一个动作的分布后并采样
-            log_prob = dist.log_prob(next_action).sum(-1, keepdim=True)
+            # dist.log_prob(next_action) → 返回形状 [batch_size, action_dim],计算每一个动作的对数概率密度
+            # .sum(-1) → 沿最后一维求和，得到 [batch_size]
+            # keepdim=True → 保持输出维度为 [batch_size, 1]
+            # 独立性假设：DrQ/SAC假设动作各维度相互独立，所以联合概率是边缘概率的乘积
+            # 对数转换：对数将乘积转换为求和，提高数值稳定性
+            # 维度要求：后续运算需要 [batch_size, 1] 维度的张量
+            log_prob = dist.log_prob(next_action).sum(-1, keepdim=True) # 是SAC/DrQ算法中熵正则化的关键部分
             target_Q1, target_Q2 = self.critic_target(next_obs, next_action)
             target_V = torch.min(target_Q1,
                                  target_Q2) - self.alpha.detach() * log_prob
