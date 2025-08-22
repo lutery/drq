@@ -32,12 +32,16 @@ class Encoder(nn.Module):
             nn.Linear(self.num_filters * 35 * 35, self.feature_dim),
             nn.LayerNorm(self.feature_dim))
 
+        # 存储归一化后的obs
+        # 存储每一个卷积层的输出
+        # 存储最终的输出
         self.outputs = dict()
 
     def forward_conv(self, obs):
         obs = obs / 255. # 归一化，Encoder中
         self.outputs['obs'] = obs
 
+        # todo 和下面的循环合并在一起
         conv = torch.relu(self.convs[0](obs))
         self.outputs['conv1'] = conv
 
@@ -45,10 +49,17 @@ class Encoder(nn.Module):
             conv = torch.relu(self.convs[i](conv))
             self.outputs['conv%s' % (i + 1)] = conv
 
+        # 将卷积层的输出展平
         h = conv.view(conv.size(0), -1)
         return h
 
     def forward(self, obs, detach=False):
+        '''
+        detach: 是否在前向传播时分离梯度
+        主要用于Actor的前向传播，避免Actor的梯度更新影响到Encoder
+        这样可以在Actor更新时不影响Critic的编码器
+        这样做的好处是Actor和Critic可以共享编码器的卷积层
+        '''
         h = self.forward_conv(obs)
 
         if detach:
@@ -131,13 +142,16 @@ class Critic(nn.Module):
     def __init__(self, encoder_cfg, action_shape, hidden_dim, hidden_depth):
         super().__init__()
 
+        # Encoder
         self.encoder = hydra.utils.instantiate(encoder_cfg)
 
+        # 两个评价的网络
         self.Q1 = utils.mlp(self.encoder.feature_dim + action_shape[0],
                             hidden_dim, 1, hidden_depth)
         self.Q2 = utils.mlp(self.encoder.feature_dim + action_shape[0],
                             hidden_dim, 1, hidden_depth)
 
+        # 存储评价网络的输出Q1 Q2
         self.outputs = dict()
         self.apply(utils.weight_init)
 
@@ -272,6 +286,7 @@ class DRQAgent(object):
                                  target_Q2) - self.alpha.detach() * log_prob
             target_Q = reward + (not_done * self.discount * target_V)
 
+            # 计算数据增强后的目标Q值,算法和上面一样
             dist_aug = self.actor(next_obs_aug)
             next_action_aug = dist_aug.rsample()
             log_prob_aug = dist_aug.log_prob(next_action_aug).sum(-1,
@@ -284,13 +299,17 @@ class DRQAgent(object):
 
             target_Q = (target_Q + target_Q_aug) / 2
 
+        # todo 后续查看log_prob的作用，如何促使模型进行训练
         # get current Q estimates
         current_Q1, current_Q2 = self.critic(obs, action)
+        # 计算当前Q值和目标Q值之间的均方误差损失
         critic_loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(
             current_Q2, target_Q)
 
         Q1_aug, Q2_aug = self.critic(obs_aug, action)
 
+        # 计算数据增强后的Q值和目标Q值之间的均方误差损失
+        # 这里的Q1_aug和Q2_aug是数据增强后的Q值
         critic_loss += F.mse_loss(Q1_aug, target_Q) + F.mse_loss(
             Q2_aug, target_Q)
 
