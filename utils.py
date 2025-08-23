@@ -31,6 +31,16 @@ class eval_mode(object):
 
 
 def soft_update_params(net, target_net, tau):
+    '''
+    将评价模型的参数软更新到目标模型中
+    net: 评价模型
+    target_net: 目标模型
+    tau: 更新的比例
+    公式：target_param = tau * param + (1 - tau) * target_param
+    解释：target_param是目标模型的参数，param是评价模型的参数
+    作用：使目标模型的参数逐渐接近评价模型的参数，从而提高目标模型的稳定性
+    目标模型的参数更新得更慢，更平滑
+    '''
     for param, target_param in zip(net.parameters(), target_net.parameters()):
         target_param.data.copy_(tau * param.data +
                                 (1 - tau) * target_param.data)

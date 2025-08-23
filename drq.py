@@ -229,6 +229,13 @@ class DRQAgent(object):
         self.log_alpha = torch.tensor(np.log(init_temperature)).to(device)
         self.log_alpha.requires_grad = True
         # set target entropy to -|A| 好像又是那个传说中的最佳探索目标熵值
+        '''
+        这是SAC的经验设置：
+
+        对于n维动作空间，目标熵设为-n
+        例如：2维动作空间的目标熵为-2
+        这个值在实践中效果很好
+        '''
         self.target_entropy = -action_shape[0]
 
         # optimizers
@@ -330,15 +337,19 @@ class DRQAgent(object):
 
     def update_actor_and_alpha(self, obs, logger, step):
         # detach conv filters, so we don't update them with the actor loss
+        # detach_encoder表示不再actor里面训练编码器
         dist = self.actor(obs, detach_encoder=True)
-        action = dist.rsample()
-        log_prob = dist.log_prob(action).sum(-1, keepdim=True)
+        action = dist.rsample() # 动作采样
+        log_prob = dist.log_prob(action).sum(-1, keepdim=True) # 计算动作的对数概率密度
         # detach conv filters, so we don't update them with the actor loss
-        actor_Q1, actor_Q2 = self.critic(obs, action, detach_encoder=True)
+        # todo 尝试将critic使用with torch.no_grad()包裹起来，看看效果
+        actor_Q1, actor_Q2 = self.critic(obs, action, detach_encoder=True) # 计算动作的Q值，在这里也不训练编码器
 
-        actor_Q = torch.min(actor_Q1, actor_Q2)
+        actor_Q = torch.min(actor_Q1, actor_Q2) # 取两个Q值的最小值
 
-        actor_loss = (self.alpha.detach() * log_prob - actor_Q).mean()
+        actor_loss = (self.alpha.detach() * log_prob - actor_Q).mean() # 这里是将预计的Q值进行了取反，实现最大化Q值，以达到促使动作编码器选择更优动作的目的
+        # 同时这里log_prob也会产生和update_critic中类似的效果，如果动作的概率越大，那么log_prob就会越大，从而导致actor_loss变大
+        # 这样就会促使动作选择那些概率低的动作，从而实现探索和利用的平衡
 
         logger.log('train_actor/loss', actor_loss, step)
         logger.log('train_actor/target_entropy', self.target_entropy, step)
@@ -352,6 +363,33 @@ class DRQAgent(object):
         self.actor.log(logger, step)
 
         self.log_alpha_optimizer.zero_grad()
+        # SAC论文中，温度参数α的优化目标是：J(α) = E[α * (H(π(·|s)) - H̄)]
+        # H(π(·|s)) = -log π(a|s) 是当前策略的熵
+        # H̄ 是目标熵（target entropy）
+        # 目标是让当前熵接近目标熵
+        '''
+        # 熵项: -log_prob = -log π(a|s) = H(π(·|s))
+        entropy_current = -log_prob
+
+        # 熵差异: 当前熵 - 目标熵
+        entropy_diff = entropy_current - self.target_entropy
+        #            = -log_prob - self.target_entropy
+
+        # Alpha损失: α * (当前熵 - 目标熵)
+        alpha_loss = self.alpha * entropy_diff
+
+        # 如果当前策略熵 > 目标熵 (过于随机)
+        if current_entropy > target_entropy:
+            entropy_diff > 0  # 正值
+            alpha_loss > 0    # 正损失
+            # 梯度上升会减小α，降低探索程度
+
+        # 如果当前策略熵 < 目标熵 (过于确定)  
+        if current_entropy < target_entropy:
+            entropy_diff < 0  # 负值
+            alpha_loss < 0    # 负损失  
+            # 梯度上升会增大α，提高探索程度
+        '''
         alpha_loss = (self.alpha *
                       (-log_prob - self.target_entropy).detach()).mean()
         logger.log('train_alpha/loss', alpha_loss, step)
@@ -369,6 +407,7 @@ class DRQAgent(object):
                            next_obs_aug, not_done, logger, step)
 
         if step % self.actor_update_frequency == 0:
+            # 只有在指定的频率下才更新Actor和温度参数
             self.update_actor_and_alpha(obs, logger, step)
 
         if step % self.critic_target_update_frequency == 0:
