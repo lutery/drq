@@ -299,7 +299,13 @@ class DRQAgent(object):
 
             target_Q = (target_Q + target_Q_aug) / 2
 
-        # todo 后续查看log_prob的作用，如何促使模型进行训练
+        # 如果log_prob 越小，说明预测的动作越不可能，动作的概率越低
+        # 那么target_Q就会变大，因为公式里面是减去log_prob
+        # 这样就会鼓励Critic给那些不太可能的动作更高的Q值，从而促使动作选择这些概率低的动作
+        # 反之概率越确定，log_prob越大，target_Q就会变小
+        # 那么Critic就会给这些确定的动作更低的Q值，从而促使动作选择那些不太确定的动作
+        # 从而实现探索和利用的平衡
+
         # get current Q estimates
         current_Q1, current_Q2 = self.critic(obs, action)
         # 计算当前Q值和目标Q值之间的均方误差损失
